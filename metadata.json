@@ -1,0 +1,7 @@
+{
+  "name": "CommCoach AI",
+  "description": "A conversational AI coach that helps you practice communication skills through realistic role-play scenarios using real-time voice interaction.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
