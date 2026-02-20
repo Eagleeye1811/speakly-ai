@@ -139,9 +139,8 @@ export default function SessionView({ scenario, onEndSession }: SessionViewProps
         streamRef.current = stream;
 
         const sessionPromise = ai.live.connect({
-          model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+          model: 'gemini-2.0-flash-exp',
           config: {
-            responseModalities: ["AUDIO" as any], // Just AUDIO to keep it fast, we will simulate AI transcript if needed, or if TEXT is supported simultaneously, we could add it.
             speechConfig: {
               voiceConfig: {
                 prebuiltVoiceConfig: {
@@ -149,13 +148,26 @@ export default function SessionView({ scenario, onEndSession }: SessionViewProps
                 },
               },
             },
-            systemInstruction: SYSTEM_INSTRUCTION_TEMPLATE(scenario),
+          },
+          systemInstruction: {
+            parts: [{ text: SYSTEM_INSTRUCTION_TEMPLATE(scenario) }]
           },
           callbacks: {
             onopen: () => {
               if (isCleanup) return;
               setIsConnected(true);
               recognitionRef.current?.start(); // Start user transcription
+
+              // Trigger the AI to start speaking
+              sessionPromise.then(session => {
+                // @ts-ignore - The SDK uses sendClientContent for Live interactions
+                session.sendClientContent({
+                  turns: [
+                    { role: 'user', parts: [{ text: 'Hello! I am ready to start the scenario.' }] }
+                  ],
+                  turnComplete: true
+                });
+              });
 
               if (!inputContextRef.current) return;
               const source = inputContextRef.current.createMediaStreamSource(stream);
@@ -196,7 +208,36 @@ export default function SessionView({ scenario, onEndSession }: SessionViewProps
               // Check if Gemini sends text parts too
               const textData = message.serverContent?.modelTurn?.parts?.[0]?.text;
               if (textData) {
-                setTranscripts(prev => [...prev, { id: Date.now().toString() + Math.random(), sender: 'ai', text: textData, isFinal: true }]);
+                setTranscripts(prev => {
+                  const newTranscripts = [...prev];
+                  const lastIdx = newTranscripts.length - 1;
+                  if (lastIdx >= 0 && newTranscripts[lastIdx].sender === 'ai' && !newTranscripts[lastIdx].isFinal) {
+                    newTranscripts[lastIdx] = {
+                      ...newTranscripts[lastIdx],
+                      text: newTranscripts[lastIdx].text + textData
+                    };
+                  } else {
+                    newTranscripts.push({
+                      id: Date.now().toString() + Math.random(),
+                      sender: 'ai',
+                      text: textData,
+                      isFinal: false
+                    });
+                  }
+                  return newTranscripts;
+                });
+              }
+
+              // Set final if turn completes or interrupted
+              if (message.serverContent?.turnComplete || message.serverContent?.interrupted) {
+                setTranscripts(prev => {
+                  const newTranscripts = [...prev];
+                  const lastIdx = newTranscripts.length - 1;
+                  if (lastIdx >= 0 && newTranscripts[lastIdx].sender === 'ai') {
+                    newTranscripts[lastIdx] = { ...newTranscripts[lastIdx], isFinal: true };
+                  }
+                  return newTranscripts;
+                });
               }
 
               const audioData = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
@@ -373,19 +414,48 @@ export default function SessionView({ scenario, onEndSession }: SessionViewProps
             </div>
           )}
 
-          {transcripts.map((msg) => (
-            <div key={msg.id} className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}>
-              <span className="text-xs font-semibold text-slate-500 mb-1 ml-1 mr-1 uppercase tracking-wider">
-                {msg.sender === 'user' ? 'You' : 'Coach'}
-              </span>
-              <div className={`max-w-[85%] p-3.5 rounded-2xl text-sm leading-relaxed ${msg.sender === 'user'
-                  ? `bg-blue-600/90 text-white rounded-tr-sm shadow-md shadow-blue-900/20 ${!msg.isFinal ? 'opacity-80 border border-blue-400/30' : ''}`
+          {transcripts.map((msg) => {
+            if (msg.sender === 'ai' && msg.text.includes('Coach Note:')) {
+              const parts = msg.text.split('Coach Note:');
+              const beforeNote = parts[0].trim();
+              const noteContent = parts[1] ? parts[1].trim() : '';
+
+              return (
+                <div key={msg.id} className="flex flex-col w-full gap-4 items-center animate-in fade-in slide-in-from-bottom-2 duration-300 mb-4">
+                  {beforeNote && (
+                    <div className="w-full flex flex-col items-start">
+                      <span className="text-xs font-semibold text-slate-500 mb-1 ml-1 uppercase tracking-wider">Coach</span>
+                      <div className="max-w-[85%] p-3.5 rounded-2xl text-sm leading-relaxed bg-slate-800 text-slate-200 rounded-tl-sm border border-slate-700 shadow-md">
+                        {beforeNote}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="w-[90%] bg-indigo-500/10 border border-indigo-500/30 text-indigo-200 px-4 py-3 rounded-xl text-sm shadow-xl flex items-start gap-3 mt-2 mb-2">
+                    <AlertCircle className="w-5 h-5 text-indigo-400 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-indigo-400 block mb-1 uppercase tracking-wider text-xs">Live Feedback</span>
+                      {noteContent || <span className="animate-pulse">Analyzing...</span>}
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+
+            return (
+              <div key={msg.id} className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'} mb-4 animate-in fade-in zoom-in-95 duration-200`}>
+                <span className="text-xs font-semibold text-slate-500 mb-1 ml-1 mr-1 uppercase tracking-wider">
+                  {msg.sender === 'user' ? 'You' : 'Coach'}
+                </span>
+                <div className={`max-w-[85%] p-3.5 rounded-2xl text-sm leading-relaxed ${msg.sender === 'user'
+                  ? `bg-blue-600/90 text-white rounded-tr-sm shadow-md shadow-blue-900/20 ${!msg.isFinal ? 'opacity-80 border border-blue-400/30 animate-pulse' : ''}`
                   : 'bg-slate-800 text-slate-200 rounded-tl-sm border border-slate-700 shadow-md'
-                }`}>
-                {msg.text}
+                  }`}>
+                  {msg.text}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* Live Metrics Cards (Simulated logic for demo) */}
